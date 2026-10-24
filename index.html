@@ -361,41 +361,114 @@
             line-height: 1.6;
         }
         .online-panel {
-            width: min(620px, 90%);
+            width: min(680px, 92%);
+            max-height: 415px;
+            overflow-y: auto;
             display: flex;
             flex-direction: column;
-            gap: 14px;
-            padding: 22px;
+            gap: 10px;
+            padding: 16px 20px;
             background: rgba(255,255,255,0.055);
             border: 1px solid rgba(255,255,255,0.14);
             border-radius: 14px;
         }
+        .online-panel::-webkit-scrollbar {
+            width: 6px;
+        }
+        .online-panel::-webkit-scrollbar-thumb {
+            background: #57606f;
+            border-radius: 3px;
+        }
+        .net-mode-tabs {
+            display: flex;
+            gap: 10px;
+            justify-content: center;
+            margin-bottom: 2px;
+        }
+        .net-tab-btn {
+            flex: 1;
+            padding: 9px 12px;
+            border-radius: 8px;
+            border: 2px solid #57606f;
+            background: rgba(17, 24, 39, 0.75);
+            color: #a4b0be;
+            font-size: 13px;
+            font-weight: 800;
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+        .net-tab-btn.active {
+            border-color: #00d2d3;
+            background: rgba(0, 210, 211, 0.18);
+            color: #00d2d3;
+            box-shadow: 0 0 12px rgba(0, 210, 211, 0.28);
+        }
+        .online-grid-2col {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 14px;
+            align-items: stretch;
+        }
+        .online-subbox {
+            background: rgba(0, 0, 0, 0.28);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 10px;
+            padding: 12px;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            gap: 8px;
+        }
         .online-field {
             display: flex;
             flex-direction: column;
-            gap: 7px;
+            gap: 5px;
             color: #dfe4ea;
-            font-size: 13px;
+            font-size: 12.5px;
             font-weight: 700;
         }
         .online-input {
             width: 100%;
             min-width: 0;
-            padding: 12px 14px;
+            padding: 9px 12px;
             color: #fff;
             background: #111827;
             border: 1px solid #57606f;
             border-radius: 8px;
-            font: 600 16px 'Segoe UI', sans-serif;
+            font: 600 14px 'Segoe UI', sans-serif;
             user-select: text;
             outline: none;
         }
         .online-input:focus { border-color: #00d2d3; box-shadow: 0 0 0 2px rgba(0,210,211,.15); }
+        .lan-code-area {
+            width: 100%;
+            height: 54px;
+            padding: 7px 10px;
+            color: #00d2d3;
+            background: #0b0f19;
+            border: 1px solid #57606f;
+            border-radius: 8px;
+            font: 600 11.5px monospace;
+            user-select: text;
+            resize: none;
+            outline: none;
+        }
+        .lan-code-area:focus { border-color: #ffa502; }
+        .lan-step-badge {
+            display: inline-block;
+            background: #ffa502;
+            color: #0b0e17;
+            font-weight: 900;
+            font-size: 11px;
+            padding: 2px 7px;
+            border-radius: 4px;
+            margin-right: 5px;
+        }
         .online-status {
-            min-height: 22px;
+            min-height: 20px;
             color: #a4b0be;
-            font-size: 13px;
-            line-height: 1.5;
+            font-size: 12.5px;
+            line-height: 1.45;
             text-align: center;
             overflow-wrap: anywhere;
         }
@@ -422,6 +495,7 @@
             .btn-group { flex-wrap: wrap; justify-content: center; }
             h1 { font-size: clamp(27px, 5vw, 46px); text-align: center; }
             .controls-card { gap: 12px; }
+            .online-grid-2col { grid-template-columns: 1fr; }
         }
     </style>
 </head>
@@ -466,7 +540,7 @@
             <button class="btn" onclick="openSkillSelect('solo')">1 NGƯỜI (SINH TỒN)</button>
             <button class="btn secondary" onclick="openSkillSelect('ai')">ĐẤU VỚI MÁY (VS AI)</button>
             <button class="btn tertiary" onclick="openSkillSelect('pvp')">2 NGƯỜI CHƠI (2P)</button>
-            <button class="btn secondary" onclick="openOnlineLobby()">🌐 CHƠI ONLINE</button>
+            <button class="btn secondary" onclick="openOnlineLobby()">🌐 CHƠI ONLINE / LAN</button>
         </div>
 
         <div class="controls-card">
@@ -485,21 +559,61 @@
         </div>
     </div>
 
-    <!-- PHÒNG ONLINE -->
+    <!-- PHÒNG ONLINE & DÂY LAN -->
     <div id="online-screen" class="overlay hidden">
-        <h1>CHƠI ONLINE</h1>
-        <div class="subtitle">TẠO MÃ PHÒNG HOẶC NHẬP MÃ CỦA BẠN BÈ</div>
+        <h1 style="font-size:34px; margin-bottom:2px;">KẾT NỐI ĐẤU 2 MÁY</h1>
+        <div class="subtitle" style="margin-bottom:10px; font-size:13.5px;">HỖ TRỢ KHÁC MẠNG WI-FI / 4G TOÀN CẦU & NỐI DÂY CÁP LAN TRỰC TIẾP</div>
         <div class="online-panel">
-            <label class="online-field">Tên hiển thị
-                <input id="online-name" class="online-input" maxlength="16" value="Người chơi" placeholder="Nhập tên của m...">
+            <label class="online-field">Tên hiển thị của bạn
+                <input id="online-name" class="online-input" maxlength="16" value="Người chơi" placeholder="Nhập tên của bạn...">
             </label>
-            <button class="btn tertiary" onclick="createOnlineRoom()">＋ TẠO PHÒNG MỚI</button>
-            <div style="height:1px;background:rgba(255,255,255,.12);margin:2px 0;"></div>
-            <label class="online-field">Mã phòng của bạn bè
-                <input id="join-room-code" class="online-input" maxlength="20" autocomplete="off" autocapitalize="characters" placeholder="VD: A7K9Q2">
-            </label>
-            <button class="btn secondary" onclick="joinOnlineRoom()">↗ VÀO PHÒNG</button>
-            <div id="online-status" class="online-status" aria-live="polite">Chọn tạo phòng hoặc nhập mã phòng do bạn bè gửi.</div>
+
+            <div class="net-mode-tabs">
+                <button id="tab-net-internet" class="net-tab-btn active" onclick="switchNetTab('internet')">🌐 ONLINE XUYÊN WI-FI / 4G (MÃ PHÒNG)</button>
+                <button id="tab-net-lan" class="net-tab-btn" onclick="switchNetTab('lan')">🔌 NỐI DÂY LAN TRỰC TIẾP (KHÔNG CẦN MẠNG)</button>
+            </div>
+
+            <!-- CHẾ ĐỘ 1: ONLINE QUA INTERNET (KHÁC WIFI / 4G VẪN CHƠI ĐƯỢC NHỜ TURN RELAY) -->
+            <div id="net-panel-internet" class="online-grid-2col">
+                <div class="online-subbox">
+                    <div style="font-weight:800; color:#2ed573; font-size:13.5px;">CHỦ PHÒNG (MÁY 1)</div>
+                    <div style="font-size:12px; color:#a4b0be; line-height:1.4;">Tạo mã phòng 6 ký tự. Hỗ trợ kết nối xuyên qua 2 Wi-Fi khác nhau, khác nhà mạng hoặc 4G/5G.</div>
+                    <button class="btn tertiary small" style="width:100%;" onclick="createOnlineRoom()">＋ TẠO PHÒNG MỚI</button>
+                </div>
+                <div class="online-subbox">
+                    <label class="online-field" style="color:#70a1ff;">NGƯỜI VÀO PHÒNG (MÁY 2)
+                        <input id="join-room-code" class="online-input" maxlength="20" autocomplete="off" autocapitalize="characters" placeholder="Nhập mã phòng (VD: A7K9Q2)">
+                    </label>
+                    <button class="btn secondary small" style="width:100%;" onclick="joinOnlineRoom()">↗ VÀO PHÒNG NGAY</button>
+                </div>
+            </div>
+
+            <!-- CHẾ ĐỘ 2: NỐI DÂY CÁP LAN TRỰC TIẾP GIỮA 2 MÁY (DIRECT WEBRTC P2P) -->
+            <div id="net-panel-lan" class="online-grid-2col hidden">
+                <div class="online-subbox">
+                    <div style="font-weight:800; color:#00d2d3; font-size:13px;"><span class="lan-step-badge">MÁY 1</span>TẠO KHÓA LAN (CHỦ PHÒNG)</div>
+                    <button class="btn tertiary small" onclick="createLanDirectOffer()">1. TẠO & CHÉP MÃ KHÓA MỜI (OFFER)</button>
+                    <textarea id="lan-offer-out" class="lan-code-area" readonly placeholder="Mã khóa mời (Offer) sẽ hiện ở đây sau khi bấm nút 1. Hãy gửi mã này cho Máy 2..."></textarea>
+                    <div style="font-size:11.5px; color:#dfe4ea; font-weight:700;">3. Dán Mã Phản Hồi (Answer) từ Máy 2 vào đây:</div>
+                    <div style="display:flex; gap:6px;">
+                        <input id="lan-answer-in" class="online-input" style="padding:6px 10px; font-size:12px;" placeholder="Dán mã phản hồi từ Máy 2...">
+                        <button class="btn secondary small" style="white-space:nowrap;" onclick="acceptLanDirectAnswer()">KẾT NỐI</button>
+                    </div>
+                </div>
+
+                <div class="online-subbox">
+                    <div style="font-weight:800; color:#ff9f43; font-size:13px;"><span class="lan-step-badge">MÁY 2</span>NHẬP KHÓA LAN (KHÁCH)</div>
+                    <div style="font-size:11.5px; color:#dfe4ea; font-weight:700;">2. Dán Mã Khóa Mời (Offer) của Máy 1 vào đây:</div>
+                    <div style="display:flex; gap:6px;">
+                        <input id="lan-offer-in" class="online-input" style="padding:6px 10px; font-size:12px;" placeholder="Dán mã khóa mời của Máy 1...">
+                        <button class="btn secondary small" style="white-space:nowrap;" onclick="createLanDirectAnswer()">TẠO MÃ TRẢ LỜI</button>
+                    </div>
+                    <textarea id="lan-answer-out" class="lan-code-area" readonly placeholder="Mã Phản Hồi (Answer) sẽ hiện ở đây và tự sao chép. Hãy gửi lại mã này cho Máy 1 dán vào bước 3!"></textarea>
+                    <button class="btn small" style="background:#2f3542; box-shadow:none; padding:6px 10px; font-size:11.5px;" onclick="copyLanText('lan-answer-out')">📋 SAO CHÉP LẠI MÃ PHẢN HỒI</button>
+                </div>
+            </div>
+
+            <div id="online-status" class="online-status" aria-live="polite">Chọn kết nối bằng Mã Phòng (hỗ trợ khác Wi-Fi) hoặc Nối Dây LAN trực tiếp.</div>
             <button class="btn small" style="background:#3b4252;box-shadow:0 4px 0 #222831;align-self:center;" onclick="backToMenu()">⬅ MENU CHÍNH</button>
         </div>
     </div>
@@ -709,11 +823,13 @@ let fieldObjects = []; // Hố đen, tường gió, phân thân, trụ súng, la
 let globalSlowTimer = 0;
 let globalReverseGravityTimer = 0;
 
-// Trạng thái chơi online: chủ phòng chạy mô phỏng, người vào phòng nhận snapshot.
+// Trạng thái chơi online & LAN: chủ phòng chạy mô phỏng, người vào phòng nhận snapshot.
 let onlineMode = false;
 let onlineRole = null; // 'host' hoặc 'guest'
 let onlinePeer = null;
 let onlineConn = null;
+let lanRawPc = null;
+let lanRawChannel = null;
 let onlineRoomCode = '';
 let onlinePlayerName = 'Người chơi';
 let onlineOpponentName = 'Đối thủ';
@@ -722,6 +838,31 @@ let onlineOpponentReady = false;
 let onlineGuestInput = { left: false, right: false, up: false, down: false, skill: false };
 let onlineLastSnapshotFrame = -1;
 let onlineWaitingForStart = false;
+
+// Cấu hình STUN + TURN Relay đa cổng giúp 2 máy khác Wi-Fi / 4G / khác nhà mạng kết nối xuyên tường lửa (NAT Traversal)
+const CROSS_NETWORK_RTC_CONFIG = {
+    iceServers: [
+        { urls: 'stun:stun.l.google.com:19302' },
+        { urls: 'stun:stun1.l.google.com:19302' },
+        { urls: 'stun:stun2.l.google.com:19302' },
+        { urls: 'stun:stun.cloudflare.com:3478' },
+        {
+            urls: [
+                'turn:openrelay.metered.ca:80',
+                'turn:openrelay.metered.ca:443',
+                'turn:openrelay.metered.ca:443?transport=tcp'
+            ],
+            username: 'openrelayproject',
+            credential: 'openrelayproject'
+        }
+    ],
+    iceCandidatePoolSize: 10
+};
+
+const PEERJS_CROSS_WIFI_OPTIONS = {
+    debug: 1,
+    config: CROSS_NETWORK_RTC_CONFIG
+};
 
 // Biến chọn kỹ năng
 let selectingPlayer = 1;
@@ -745,7 +886,20 @@ const platforms = [
     { x: W / 2 - 110, y: GROUND_Y - 210, w: 220, h: 12 }
 ];
 
-// ================= CHƠI ONLINE =================
+// ================= CHƠI ONLINE (XUYÊN WI-FI) & NỐI DÂY LAN =================
+function switchNetTab(tab) {
+    const isInternet = tab === 'internet';
+    document.getElementById('tab-net-internet').classList.toggle('active', isInternet);
+    document.getElementById('tab-net-lan').classList.toggle('active', !isInternet);
+    document.getElementById('net-panel-internet').classList.toggle('hidden', !isInternet);
+    document.getElementById('net-panel-lan').classList.toggle('hidden', isInternet);
+    if (isInternet) {
+        setOnlineStatus('Chế độ Online Xuyên Mạng: Hai máy khác Wi-Fi hoặc dùng 4G đều kết nối được bằng Mã Phòng.');
+    } else {
+        setOnlineStatus('Chế độ Cáp LAN Trực Tiếp: Hai máy cắm chung dây mạng LAN (hoặc chung Switch/Router nội bộ không cần Internet).');
+    }
+}
+
 function setOnlineStatus(message) {
     const lobby = document.getElementById('online-status');
     const banner = document.getElementById('online-room-status');
@@ -773,7 +927,7 @@ function openOnlineLobby() {
     document.getElementById('hud').classList.add('hidden');
     document.getElementById('online-screen').classList.remove('hidden');
     document.getElementById('online-room-banner').classList.add('hidden');
-    setOnlineStatus('Chọn tạo phòng hoặc nhập mã phòng do bạn bè gửi.');
+    setOnlineStatus('Chọn tạo phòng (hỗ trợ 2 máy khác Wi-Fi) hoặc chuyển sang tab Nối Dây LAN.');
 }
 
 function hideAllOverlaysForGame() {
@@ -792,8 +946,11 @@ function showOnlineRoomBanner() {
     }
     banner.classList.remove('hidden');
     document.getElementById('online-room-code-text').textContent = onlineRoomCode;
-    document.getElementById('online-room-banner-text').textContent = onlineRole === 'host' ? 'MÃ PHÒNG CỦA BẠN:' : 'ĐANG Ở PHÒNG:';
-    document.getElementById('online-copy-room').classList.toggle('hidden', onlineRole !== 'host');
+    const isLan = onlineRoomCode === 'CÁP-LAN';
+    document.getElementById('online-room-banner-text').textContent = isLan
+        ? 'KẾT NỐI TRỰC TIẾP:'
+        : (onlineRole === 'host' ? 'MÃ PHÒNG CỦA BẠN:' : 'ĐANG Ở PHÒNG:');
+    document.getElementById('online-copy-room').classList.toggle('hidden', onlineRole !== 'host' || isLan);
 }
 
 async function copyOnlineRoomCode() {
@@ -810,6 +967,27 @@ async function copyOnlineRoomCode() {
     }
 }
 
+async function copyLanText(elementId) {
+    const el = document.getElementById(elementId);
+    const val = (el && el.value ? el.value : '').trim();
+    if (!val) {
+        setOnlineStatus('Chưa có mã khóa để sao chép.');
+        return;
+    }
+    try {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            await navigator.clipboard.writeText(val);
+            setOnlineStatus('Đã sao chép mã khóa LAN vào bộ nhớ tạm!');
+        } else {
+            el.select();
+            document.execCommand('copy');
+            setOnlineStatus('Đã sao chép mã khóa LAN!');
+        }
+    } catch (_) {
+        el.select();
+    }
+}
+
 function safeOnlineSend(data) {
     if (!onlineConn || !onlineConn.open) return false;
     try { onlineConn.send(data); return true; }
@@ -818,7 +996,7 @@ function safeOnlineSend(data) {
 
 function createOnlineRoom() {
     if (typeof window.Peer !== 'function') {
-        setOnlineStatus('Không tải được thư viện online. Kiểm tra Internet hoặc thử tải lại trang.');
+        setOnlineStatus('Không tải được thư viện online. Nếu không có Internet, hãy chọn tab NỐI DÂY LAN TRỰC TIẾP.');
         return;
     }
     leaveOnlineSession(false);
@@ -828,11 +1006,11 @@ function createOnlineRoom() {
     onlineOpponentName = 'Đối thủ';
     onlineOpponentReady = false;
     onlineWaitingForStart = false;
-    setOnlineStatus('Đang tạo phòng...');
+    setOnlineStatus('Đang tạo phòng xuyên mạng (STUN/TURN)...');
 
     const code = generateRoomCode();
     try {
-        onlinePeer = new Peer(code);
+        onlinePeer = new Peer(code, PEERJS_CROSS_WIFI_OPTIONS);
     } catch (err) {
         setOnlineStatus('Không khởi tạo được máy chủ kết nối. Hãy tải lại trang.');
         leaveOnlineSession(false);
@@ -842,7 +1020,7 @@ function createOnlineRoom() {
         onlineRoomCode = String(id).toUpperCase();
         openSkillSelect('online-host');
         showOnlineRoomBanner();
-        setOnlineStatus('Phòng đã tạo. Gửi mã cho bạn bè và chờ người chơi vào.');
+        setOnlineStatus('Phòng đã tạo! Gửi mã cho bạn bè (dù khác Wi-Fi hay dùng 4G đều vào được).');
     });
     onlinePeer.on('connection', conn => {
         if (onlineConn && onlineConn.open) {
@@ -857,18 +1035,18 @@ function createOnlineRoom() {
         if (type === 'unavailable-id') {
             setOnlineStatus('Mã phòng bị trùng. Bấm quay lại và tạo phòng khác.');
         } else {
-            setOnlineStatus('Lỗi kết nối (' + (type || 'network') + '). Thử lại hoặc dùng mạng khác.');
+            setOnlineStatus('Lỗi kết nối (' + (type || 'network') + '). Thử lại hoặc dùng chế độ Nối Dây LAN.');
         }
     });
     onlinePeer.on('disconnected', () => {
-        if (onlineMode) setOnlineStatus('Mất kết nối máy chủ bắt tay. Đang thử kết nối lại...');
+        if (onlineMode && onlinePeer) setOnlineStatus('Mất kết nối máy chủ bắt tay. Đang thử kết nối lại...');
         try { if (onlinePeer && !onlinePeer.destroyed) onlinePeer.reconnect(); } catch (_) {}
     });
 }
 
 function joinOnlineRoom() {
     if (typeof window.Peer !== 'function') {
-        setOnlineStatus('Không tải được thư viện online. Kiểm tra Internet hoặc thử tải lại trang.');
+        setOnlineStatus('Không tải được thư viện online. Nếu nối cáp trực tiếp, hãy chọn tab NỐI DÂY LAN.');
         return;
     }
     const code = (document.getElementById('join-room-code').value || '').trim().toUpperCase();
@@ -883,10 +1061,10 @@ function joinOnlineRoom() {
     onlinePlayerName = onlineNameFromInput();
     onlineOpponentReady = false;
     onlineWaitingForStart = true;
-    setOnlineStatus('Đang tìm phòng ' + code + '...');
+    setOnlineStatus('Đang kết nối xuyên mạng tới phòng ' + code + '...');
     showOnlineRoomBanner();
 
-    try { onlinePeer = new Peer(); }
+    try { onlinePeer = new Peer(PEERJS_CROSS_WIFI_OPTIONS); }
     catch (err) {
         setOnlineStatus('Không khởi tạo được kết nối. Hãy tải lại trang.');
         leaveOnlineSession(false);
@@ -894,14 +1072,187 @@ function joinOnlineRoom() {
     }
     onlinePeer.on('open', () => {
         if (!onlineMode || onlineRole !== 'guest') return;
-        onlineConn = onlinePeer.connect(code, { reliable: true });
+        onlineConn = onlinePeer.connect(code, { reliable: true, serialization: 'json' });
         setupOnlineConnection(onlineConn, 'guest');
     });
     onlinePeer.on('error', err => {
         const type = err && err.type ? err.type : '';
         if (type === 'peer-unavailable') setOnlineStatus('Không tìm thấy phòng. Kiểm tra mã hoặc nhờ chủ phòng tạo lại.');
-        else setOnlineStatus('Lỗi kết nối (' + (type || 'network') + '). Thử lại hoặc dùng mạng khác.');
+        else setOnlineStatus('Lỗi kết nối (' + (type || 'network') + '). Thử lại hoặc kiểm tra mạng.');
     });
+}
+
+// ================= KẾT NỐI NỐI DÂY CÁP LAN TRỰC TIẾP (SERVERLESS WEBRTC) =================
+function encodeLanToken(desc) {
+    return btoa(unescape(encodeURIComponent(JSON.stringify({ t: desc.type, s: desc.sdp }))));
+}
+
+function decodeLanToken(tokenStr) {
+    const raw = JSON.parse(decodeURIComponent(escape(atob(tokenStr.trim()))));
+    if (!raw || !raw.t || !raw.s) throw new Error('Invalid LAN token');
+    return new RTCSessionDescription({ type: raw.t, sdp: raw.s });
+}
+
+function waitIceGatheringComplete(pc, timeoutMs = 2200) {
+    return new Promise(resolve => {
+        if (pc.iceGatheringState === 'complete') {
+            resolve();
+            return;
+        }
+        let done = false;
+        const finish = () => {
+            if (done) return;
+            done = true;
+            pc.removeEventListener('icegatheringstatechange', checkState);
+            pc.removeEventListener('icecandidate', onCand);
+            resolve();
+        };
+        const checkState = () => {
+            if (pc.iceGatheringState === 'complete') finish();
+        };
+        const onCand = e => {
+            if (!e.candidate) finish();
+        };
+        pc.addEventListener('icegatheringstatechange', checkState);
+        pc.addEventListener('icecandidate', onCand);
+        setTimeout(finish, timeoutMs);
+    });
+}
+
+function wrapLanDataChannelAsConn(channel, pc) {
+    const wrapper = {
+        open: false,
+        _openCallbacks: [],
+        _dataCallbacks: [],
+        _closeCallbacks: [],
+        _errorCallbacks: [],
+        on(evt, fn) {
+            if (evt === 'open') {
+                this._openCallbacks.push(fn);
+                if (this.open) setTimeout(fn, 0);
+            } else if (evt === 'data') this._dataCallbacks.push(fn);
+            else if (evt === 'close') this._closeCallbacks.push(fn);
+            else if (evt === 'error') this._errorCallbacks.push(fn);
+        },
+        send(obj) {
+            if (channel.readyState === 'open') {
+                channel.send(JSON.stringify(obj));
+            }
+        },
+        close() {
+            try { channel.close(); } catch (_) {}
+            try { pc.close(); } catch (_) {}
+        }
+    };
+
+    channel.onopen = () => {
+        wrapper.open = true;
+        wrapper._openCallbacks.forEach(cb => cb());
+    };
+    channel.onmessage = ev => {
+        try {
+            const parsed = JSON.parse(ev.data);
+            wrapper._dataCallbacks.forEach(cb => cb(parsed));
+        } catch (_) {}
+    };
+    channel.onclose = () => {
+        wrapper.open = false;
+        wrapper._closeCallbacks.forEach(cb => cb());
+    };
+    channel.onerror = err => {
+        wrapper._errorCallbacks.forEach(cb => cb(err));
+    };
+    return wrapper;
+}
+
+async function createLanDirectOffer() {
+    leaveOnlineSession(false);
+    onlineMode = true;
+    onlineRole = 'host';
+    onlineRoomCode = 'CÁP-LAN';
+    onlinePlayerName = onlineNameFromInput();
+    onlineOpponentName = 'Đối thủ LAN';
+    onlineOpponentReady = false;
+    onlineWaitingForStart = false;
+
+    setOnlineStatus('Đang khởi tạo cổng LAN trực tiếp trên Máy 1...');
+    try {
+        // Khi cắm dây LAN trực tiếp không có Internet, dùng host candidates nội bộ kết hợp STUN dự phòng
+        lanRawPc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
+        lanRawChannel = lanRawPc.createDataChannel('maibell_lan_channel', { ordered: true });
+        onlineConn = wrapLanDataChannelAsConn(lanRawChannel, lanRawPc);
+        setupOnlineConnection(onlineConn, 'host');
+
+        const offer = await lanRawPc.createOffer();
+        await lanRawPc.setLocalDescription(offer);
+        await waitIceGatheringComplete(lanRawPc, 2000);
+
+        const token = encodeLanToken(lanRawPc.localDescription);
+        const outEl = document.getElementById('lan-offer-out');
+        if (outEl) outEl.value = token;
+        await copyLanText('lan-offer-out');
+        setOnlineStatus('Đã tạo & sao chép Mã Khóa Mời (Offer)! Hãy gửi sang Máy 2 dán vào bước 2.');
+    } catch (err) {
+        setOnlineStatus('Không tạo được khóa LAN: ' + (err.message || 'Lỗi trình duyệt'));
+    }
+}
+
+async function createLanDirectAnswer() {
+    const offerInput = (document.getElementById('lan-offer-in')?.value || '').trim();
+    if (!offerInput) {
+        setOnlineStatus('Hãy dán Mã Khóa Mời (Offer) từ Máy 1 vào ô trước!');
+        return;
+    }
+    leaveOnlineSession(false);
+    onlineMode = true;
+    onlineRole = 'guest';
+    onlineRoomCode = 'CÁP-LAN';
+    onlinePlayerName = onlineNameFromInput();
+    onlineOpponentReady = false;
+    onlineWaitingForStart = true;
+
+    setOnlineStatus('Đang xử lý khóa LAN từ Máy 1...');
+    try {
+        const offerDesc = decodeLanToken(offerInput);
+        lanRawPc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
+        lanRawPc.ondatachannel = ev => {
+            lanRawChannel = ev.channel;
+            onlineConn = wrapLanDataChannelAsConn(lanRawChannel, lanRawPc);
+            setupOnlineConnection(onlineConn, 'guest');
+        };
+
+        await lanRawPc.setRemoteDescription(offerDesc);
+        const answer = await lanRawPc.createAnswer();
+        await lanRawPc.setLocalDescription(answer);
+        await waitIceGatheringComplete(lanRawPc, 2000);
+
+        const answerToken = encodeLanToken(lanRawPc.localDescription);
+        const outEl = document.getElementById('lan-answer-out');
+        if (outEl) outEl.value = answerToken;
+        await copyLanText('lan-answer-out');
+        setOnlineStatus('Đã tạo & sao chép Mã Phản Hồi (Answer)! Hãy gửi lại cho Máy 1 dán vào bước 3.');
+    } catch (err) {
+        setOnlineStatus('Mã Khóa Mời (Offer) không hợp lệ. Hãy kiểm tra và dán lại đầy đủ.');
+    }
+}
+
+async function acceptLanDirectAnswer() {
+    const answerInput = (document.getElementById('lan-answer-in')?.value || '').trim();
+    if (!answerInput) {
+        setOnlineStatus('Hãy dán Mã Phản Hồi (Answer) từ Máy 2 vào ô bước 3!');
+        return;
+    }
+    if (!lanRawPc) {
+        setOnlineStatus('Bạn cần bấm nút "1. Tạo Mã Khóa Mời" trước.');
+        return;
+    }
+    try {
+        const answerDesc = decodeLanToken(answerInput);
+        await lanRawPc.setRemoteDescription(answerDesc);
+        setOnlineStatus('Đang thông tuyến cáp LAN giữa 2 máy...');
+    } catch (err) {
+        setOnlineStatus('Mã Phản Hồi (Answer) không hợp lệ. Hãy kiểm tra lại.');
+    }
 }
 
 function setupOnlineConnection(conn, role) {
@@ -910,6 +1261,8 @@ function setupOnlineConnection(conn, role) {
             safeOnlineSend({ type: 'join', name: onlinePlayerName });
             setOnlineStatus('Đã kết nối tới phòng. Đang lấy thông tin trận đấu...');
         } else {
+            openSkillSelect('online-host');
+            showOnlineRoomBanner();
             setOnlineStatus('Đã có người kết nối. Đang trao đổi thông tin phòng...');
         }
     });
@@ -925,7 +1278,7 @@ function setupOnlineConnection(conn, role) {
             setOnlineStatus('Đã mất kết nối với chủ phòng. Hãy quay lại và vào phòng lại.');
         }
     });
-    conn.on('error', () => setOnlineStatus('Lỗi đường truyền online. Kiểm tra mạng ở cả hai máy.'));
+    conn.on('error', () => setOnlineStatus('Lỗi đường truyền online. Kiểm tra mạng hoặc dây LAN ở cả hai máy.'));
 }
 
 function handleOnlineMessage(data, role) {
@@ -965,7 +1318,7 @@ function handleOnlineMessage(data, role) {
         openSkillSelect('online-guest');
         setSelectingPlayer(2);
         showOnlineRoomBanner();
-        setOnlineStatus('Đã vào phòng của ' + onlineOpponentName + '. Chọn kỹ năng của m rồi bấm SẴN SÀNG.');
+        setOnlineStatus('Đã vào phòng của ' + onlineOpponentName + '. Chọn kỹ năng của bạn rồi bấm SẴN SÀNG.');
     } else if (data.type === 'start') {
         const p1idx = Number(data.p1SkillIdx), p2idx = Number(data.p2SkillIdx);
         if (Number.isInteger(p1idx) && p1idx >= 0 && p1idx < SKILLS_DATA.length) p1SelectedSkill = p1idx;
@@ -1077,8 +1430,12 @@ function startOnlineMatch() {
 function leaveOnlineSession(showStatus = true) {
     try { if (onlineConn) onlineConn.close(); } catch (_) {}
     try { if (onlinePeer && !onlinePeer.destroyed) onlinePeer.destroy(); } catch (_) {}
+    try { if (lanRawChannel) lanRawChannel.close(); } catch (_) {}
+    try { if (lanRawPc) lanRawPc.close(); } catch (_) {}
     onlineConn = null;
     onlinePeer = null;
+    lanRawChannel = null;
+    lanRawPc = null;
     onlineMode = false;
     onlineRole = null;
     onlineRoomCode = '';
