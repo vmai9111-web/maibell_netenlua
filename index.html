@@ -614,6 +614,7 @@
             </div>
 
             <div id="online-status" class="online-status" aria-live="polite">Chọn kết nối bằng Mã Phòng (hỗ trợ khác Wi-Fi) hoặc Nối Dây LAN trực tiếp.</div>
+            <div style="font-size:12px; color:#a4b0be; text-align:center; line-height:1.6;">⌨️ Cả 2 máy chơi giống nhau: <span class="key">A</span> / <span class="key">D</span> di chuyển · <span class="key">W</span> nhảy kép · <span class="key">S</span> trượt · <span class="key">E</span> dùng chiêu</div>
             <button class="btn small" style="background:#3b4252;box-shadow:0 4px 0 #222831;align-self:center;" onclick="backToMenu()">⬅ MENU CHÍNH</button>
         </div>
     </div>
@@ -802,7 +803,7 @@ window.addEventListener('keyup', e => {
 });
 window.addEventListener('blur', () => {
     if (onlineMode && onlineRole === 'guest') {
-        ['ArrowLeft','ArrowRight','ArrowUp','ArrowDown','Enter','Slash'].forEach(code => keys[code] = false);
+        ['KeyA','KeyD','KeyW','KeyS','KeyE'].forEach(code => keys[code] = false);
         sendOnlineInput();
     }
 });
@@ -838,6 +839,24 @@ let onlineOpponentReady = false;
 let onlineGuestInput = { left: false, right: false, up: false, down: false, skill: false };
 let onlineLastSnapshotFrame = -1;
 let onlineWaitingForStart = false;
+let lastSentOnlineInput = '';
+let lastSentOnlineInputTime = 0;
+
+// ---- Chế độ DÂY LAN: hiển thị mượt trên máy 2 ----
+// Chủ phòng gửi snapshot ~60 lần/giây qua kênh "nhanh" (không chờ gửi lại gói mất, không dồn hàng đợi).
+// Máy 2 lưu vài snapshot gần nhất rồi vẽ lùi lại ~45ms, nội suy vị trí giữa 2 snapshot nên chuyển động liền mạch.
+// Muốn mượt hơn nữa thì tăng LAN_INTERP_DELAY_MS, muốn phản hồi nhanh hơn thì giảm (nên giữ >= 34).
+const LAN_INTERP_DELAY_MS = 45;
+let onlineLanMode = false;
+let lanFastChannel = null;
+let lanSnaps = [];
+let lanClockOffset = null;
+let lanRocketMap = new Map();
+let lanLastA = null;
+let lanParticleBase = [];
+let lanLastHudTime = 0;
+let lanLastSendTs = 0;
+let lanEntitySeq = 0;
 
 // Cấu hình STUN + TURN Relay đa cổng giúp 2 máy khác Wi-Fi / 4G / khác nhà mạng kết nối xuyên tường lửa (NAT Traversal)
 const CROSS_NETWORK_RTC_CONFIG = {
@@ -1169,6 +1188,7 @@ async function createLanDirectOffer() {
     leaveOnlineSession(false);
     onlineMode = true;
     onlineRole = 'host';
+    onlineLanMode = true;
     onlineRoomCode = 'CÁP-LAN';
     onlinePlayerName = onlineNameFromInput();
     onlineOpponentName = 'Đối thủ LAN';
@@ -1180,6 +1200,9 @@ async function createLanDirectOffer() {
         // Khi cắm dây LAN trực tiếp không có Internet, dùng host candidates nội bộ kết hợp STUN dự phòng
         lanRawPc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
         lanRawChannel = lanRawPc.createDataChannel('maibell_lan_channel', { ordered: true });
+        // Kênh nhanh chỉ để gửi snapshot hình ảnh: gói nào chậm/mất thì bỏ, luôn ưu tiên gói mới nhất
+        lanFastChannel = lanRawPc.createDataChannel('maibell_lan_fast', { ordered: false, maxRetransmits: 0 });
+        setupLanFastChannel(lanFastChannel);
         onlineConn = wrapLanDataChannelAsConn(lanRawChannel, lanRawPc);
         setupOnlineConnection(onlineConn, 'host');
 
@@ -1206,6 +1229,7 @@ async function createLanDirectAnswer() {
     leaveOnlineSession(false);
     onlineMode = true;
     onlineRole = 'guest';
+    onlineLanMode = true;
     onlineRoomCode = 'CÁP-LAN';
     onlinePlayerName = onlineNameFromInput();
     onlineOpponentReady = false;
@@ -1216,6 +1240,11 @@ async function createLanDirectAnswer() {
         const offerDesc = decodeLanToken(offerInput);
         lanRawPc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
         lanRawPc.ondatachannel = ev => {
+            if (ev.channel.label === 'maibell_lan_fast') {
+                lanFastChannel = ev.channel;
+                setupLanFastChannel(lanFastChannel);
+                return;
+            }
             lanRawChannel = ev.channel;
             onlineConn = wrapLanDataChannelAsConn(lanRawChannel, lanRawPc);
             setupOnlineConnection(onlineConn, 'guest');
@@ -1329,7 +1358,8 @@ function handleOnlineMessage(data, role) {
         startGame('online-guest');
         setOnlineStatus('Đang thi đấu trực tuyến.');
     } else if (data.type === 'snapshot') {
-        applyOnlineSnapshot(data);
+        if (onlineLanMode) pushLanSnapshot(data);
+        else applyOnlineSnapshot(data);
     } else if (data.type === 'gameover') {
         gameRunning = false;
         const title = String(data.title || 'KẾT THÚC!').slice(0, 70);
@@ -1398,16 +1428,182 @@ function applyOnlineSnapshot(data) {
     }
 }
 
+// ----- Chế độ dây LAN: chủ phòng gửi snapshot gọn nhẹ qua kênh nhanh -----
+function setupLanFastChannel(ch) {
+    ch.onmessage = ev => {
+        if (onlineRole !== 'guest') return;
+        try {
+            const d = JSON.parse(ev.data);
+            if (d && d.type === 'snapshot') pushLanSnapshot(d);
+        } catch (_) {}
+    };
+}
+
+function serializeLanPlayer(p) {
+    const out = { ...p, skillId: p.skill.id };
+    delete out.skill;
+    delete out.history;
+    delete out.controls;
+    return out;
+}
+
+function serializeLanRocket(r) {
+    if (!r.nid) r.nid = ++lanEntitySeq; // mã định danh để máy 2 nội suy đúng từng quả tên lửa
+    const out = { ...r, ignorePlayerIndex: r.ignorePlayer ? players.indexOf(r.ignorePlayer) : -1 };
+    delete out.ignorePlayer;
+    return out;
+}
+
+function sendLanSnapshot() {
+    if (!onlineMode || onlineRole !== 'host' || !onlineConn || !onlineConn.open) return;
+    const t = performance.now();
+    if (t - lanLastSendTs < 7) return; // màn hình tần số quét cao: không gửi dày quá mức cần thiết
+    lanLastSendTs = t;
+    const fast = lanFastChannel && lanFastChannel.readyState === 'open' ? lanFastChannel : null;
+    const ch = fast || lanRawChannel;
+    if (!ch || ch.readyState !== 'open' || ch.bufferedAmount > 128 * 1024) return; // đường truyền đang nghẽn -> bỏ gói cũ
+    const r1 = v => Math.round(v * 10) / 10;
+    const r2 = v => Math.round(v * 100) / 100;
+    const parts = particles.length > 320 ? particles.slice(-320) : particles;
+    const packet = {
+        type: 'snapshot', ts: t, score, frameCount, globalSlowTimer, globalReverseGravityTimer, screenShake,
+        players: players.map(serializeLanPlayer),
+        rockets: rockets.map(serializeLanRocket),
+        powerups: powerups.map(p => ({ ...p })),
+        fieldObjects: fieldObjects.map(o => ({ ...o })),
+        particles: parts.map(p => [r1(p.x), r1(p.y), r2(p.vx), r2(p.vy), p.life, p.maxLife, p.color])
+    };
+    try { ch.send(JSON.stringify(packet)); } catch (_) {}
+}
+
+function pushLanSnapshot(data) {
+    if (!onlineMode || onlineRole !== 'guest' || !onlineLanMode) return;
+    const ts = Number(data.ts);
+    if (!Number.isFinite(ts) || !Array.isArray(data.players) || data.players.length < 2 || !Array.isArray(data.rockets)) return;
+    const last = lanSnaps[lanSnaps.length - 1];
+    if (last && ts <= last.ts) return; // gói đến trễ / sai thứ tự -> bỏ
+    data.ts = ts;
+    // Ước lượng chênh lệch đồng hồ 2 máy: lấy gói nhanh nhất làm chuẩn, trôi chậm để bù lệch tốc độ đồng hồ
+    const sample = performance.now() - ts;
+    if (lanClockOffset === null || sample < lanClockOffset) lanClockOffset = sample;
+    else lanClockOffset += (sample - lanClockOffset) * 0.02;
+    lanSnaps.push(data);
+    if (lanSnaps.length > 12) lanSnaps.shift();
+}
+
+// Chạy mỗi khung hình ở máy 2: dựng lại thế giới game tại thời điểm "hiện tại - độ trễ đệm" bằng nội suy
+function updateLanGuestView() {
+    if (!lanSnaps.length || lanClockOffset === null || players.length < 2) return;
+    const now = performance.now();
+    const rt = now - lanClockOffset - LAN_INTERP_DELAY_MS;
+
+    let ai = 0;
+    for (let i = lanSnaps.length - 1; i >= 0; i--) {
+        if (lanSnaps[i].ts <= rt) { ai = i; break; }
+    }
+    if (ai > 0) lanSnaps.splice(0, ai);
+    const a = lanSnaps[0];
+    const b = lanSnaps[1] || null;
+    let alpha = 0;
+    if (b && b.ts > a.ts) alpha = Math.min(1, Math.max(0, (rt - a.ts) / (b.ts - a.ts)));
+    const lerp = (p, q) => p + (q - p) * alpha;
+    const near = (p, q, lim) => Math.abs(q - p) < lim; // chênh quá lớn (dịch chuyển, đổi chỗ...) thì không kéo lê
+
+    // Đồng hồ khung hình của chủ phòng (số thực) -> hiệu ứng nhấp nháy/xoay cũng mượt
+    const fcA = Number(a.frameCount) || 0;
+    const fcB = b ? (Number(b.frameCount) || fcA) : fcA;
+    frameCount = fcA + (fcB - fcA) * alpha;
+    score = Number(a.score) || 0;
+    globalSlowTimer = Number(a.globalSlowTimer) || 0;
+    globalReverseGravityTimer = Number(a.globalReverseGravityTimer) || 0;
+    const shake = Number(a.screenShake) || 0;
+    if (shake > screenShake) screenShake = shake;
+
+    // Người chơi: giữ nguyên đối tượng, chỉ nội suy vị trí
+    for (let i = 0; i < 2; i++) {
+        const p = players[i], sa = a.players[i], sb = b ? b.players[i] : null;
+        if (!p || !sa) continue;
+        Object.assign(p, sa);
+        if (sa.skillId && p.skill && p.skill.id !== sa.skillId) {
+            const k = SKILLS_DATA.findIndex(sk => sk.id === sa.skillId);
+            if (k >= 0) p.skill = SKILLS_DATA[k];
+        }
+        if (sb && sa.alive && sb.alive && near(sa.x, sb.x, 140) && near(sa.y, sb.y, 140)) {
+            p.x = lerp(sa.x, sb.x);
+            p.y = lerp(sa.y, sb.y);
+            if (near(sa.animPhase, sb.animPhase, 2)) p.animPhase = lerp(sa.animPhase, sb.animPhase);
+        }
+    }
+
+    // Tên lửa: ghép theo mã nid giữa 2 snapshot rồi nội suy
+    const bById = new Map();
+    if (b) for (const sr of b.rockets) bById.set(sr.nid, sr);
+    const nextMap = new Map();
+    const nextRockets = [];
+    for (const sr of a.rockets) {
+        let r = lanRocketMap.get(sr.nid);
+        if (!r) r = Object.create(Rocket.prototype);
+        Object.assign(r, sr);
+        const refIndex = Number(sr.ignorePlayerIndex);
+        r.ignorePlayer = Number.isInteger(refIndex) && refIndex >= 0 && refIndex < players.length ? players[refIndex] : null;
+        const sb = bById.get(sr.nid);
+        if (sb && near(sr.x, sb.x, 160) && near(sr.y, sb.y, 160)) {
+            r.x = lerp(sr.x, sb.x);
+            r.y = lerp(sr.y, sb.y);
+            r.vx = lerp(sr.vx, sb.vx);
+            r.vy = lerp(sr.vy, sb.vy);
+        }
+        nextMap.set(sr.nid, r);
+        nextRockets.push(r);
+    }
+    lanRocketMap = nextMap;
+    rockets = nextRockets;
+
+    // Vật phẩm, vật thể kỹ năng (đứng yên) và hạt: chỉ dựng lại khi có snapshot mới
+    if (a !== lanLastA) {
+        lanLastA = a;
+        powerups = (a.powerups || []).map(s => Object.assign(Object.create(PowerUp.prototype), s));
+        fieldObjects = (a.fieldObjects || []).map(s => ({ ...s }));
+        lanParticleBase = (a.particles || []).map(s => {
+            const pt = new Particle(s[0], s[1], s[6], s[2], s[3], s[5]);
+            pt.bx = s[0]; pt.by = s[1]; pt.l0 = s[4];
+            return pt;
+        });
+    }
+    // Hạt bay thẳng đều nên máy 2 tự di chuyển tiếp giữa 2 snapshot
+    const age = frameCount - fcA;
+    const livePts = [];
+    for (const pt of lanParticleBase) {
+        const life = pt.l0 - age;
+        if (life <= 0) continue;
+        pt.x = pt.bx + pt.vx * age;
+        pt.y = pt.by + pt.vy * age;
+        pt.life = life;
+        livePts.push(pt);
+    }
+    particles = livePts;
+
+    // Cập nhật HUD (tim, hồi chiêu) tối đa ~10 lần/giây để không làm giật do thao tác DOM
+    if (now - lanLastHudTime > 100) {
+        lanLastHudTime = now;
+        updateHUD();
+    }
+}
+
 function sendOnlineInput() {
     if (!onlineMode || onlineRole !== 'guest' || !onlineConn || !onlineConn.open) return;
-    safeOnlineSend({
-        type: 'input',
-        keys: {
-            left: !!keys['ArrowLeft'], right: !!keys['ArrowRight'],
-            up: !!keys['ArrowUp'], down: !!keys['ArrowDown'],
-            skill: !!(keys['Enter'] || keys['Slash'])
-        }
-    });
+    // Máy 2 dùng cùng bộ phím với máy 1: A/D/W/S di chuyển, E dùng chiêu
+    const state = {
+        left: !!keys['KeyA'], right: !!keys['KeyD'],
+        up: !!keys['KeyW'], down: !!keys['KeyS'],
+        skill: !!keys['KeyE']
+    };
+    const sig = [state.left, state.right, state.up, state.down, state.skill].map(Number).join('');
+    const nowT = performance.now();
+    if (sig === lastSentOnlineInput && nowT - lastSentOnlineInputTime < 120) return; // không gửi trùng lặp
+    lastSentOnlineInput = sig;
+    lastSentOnlineInputTime = nowT;
+    safeOnlineSend({ type: 'input', keys: state });
 }
 
 function startOnlineMatch() {
@@ -1431,11 +1627,17 @@ function leaveOnlineSession(showStatus = true) {
     try { if (onlineConn) onlineConn.close(); } catch (_) {}
     try { if (onlinePeer && !onlinePeer.destroyed) onlinePeer.destroy(); } catch (_) {}
     try { if (lanRawChannel) lanRawChannel.close(); } catch (_) {}
+    try { if (lanFastChannel) lanFastChannel.close(); } catch (_) {}
     try { if (lanRawPc) lanRawPc.close(); } catch (_) {}
     onlineConn = null;
     onlinePeer = null;
     lanRawChannel = null;
+    lanFastChannel = null;
     lanRawPc = null;
+    onlineLanMode = false;
+    lanSnaps = [];
+    lanClockOffset = null;
+    lastSentOnlineInput = '';
     onlineMode = false;
     onlineRole = null;
     onlineRoomCode = '';
@@ -1510,7 +1712,7 @@ function renderSkillGrid() {
         document.getElementById('p1-preview-desc').textContent = hostSkill.desc;
         document.getElementById('p2-preview-title').textContent = `BẠN (P2): ${guestSkill.icon} ${guestSkill.name} (Hồi chiêu: ${guestSkill.cd}s)`;
         document.getElementById('p2-preview-desc').textContent = guestSkill.desc;
-        tabP2.textContent = 'Đang chọn kỹ năng của bạn (P2)';
+        tabP2.textContent = 'Đang chọn kỹ năng của bạn (P2 - Phím E)';
     } else {
         p2Box.style.opacity = '1';
         const label2 = gameMode === 'ai' ? 'MÁY (AI)' : 'NGƯỜI CHƠI 2';
@@ -3030,7 +3232,7 @@ function updateHUD() {
         fill2.style.width = pct2 + '%';
         fill2.style.background = p2.skillCd <= 0 ? '#2ed573' : '#ffa502';
         const txt2 = document.getElementById('p2-cd-text');
-        txt2.textContent = p2.skillCd <= 0 ? 'SẴN SÀNG' : Math.ceil(p2.skillCd / 60) + 's';
+        txt2.textContent = p2.skillCd <= 0 ? (String(gameMode).startsWith('online') ? 'SẴN SÀNG [E]' : 'SẴN SÀNG') : Math.ceil(p2.skillCd / 60) + 's';
         txt2.style.color = p2.skillCd <= 0 ? '#2ed573' : '#ffa502';
     } else {
         p2Hud.classList.add('hidden');
@@ -3051,6 +3253,8 @@ function startGame(mode) {
 
     const p1Controls = { left: 'KeyA', right: 'KeyD', up: 'KeyW', down: 'KeyS', skill1: 'KeyE', skill2: 'Space' };
     const p2Controls = { left: 'ArrowLeft', right: 'ArrowRight', up: 'ArrowUp', down: 'ArrowDown', skill1: 'Enter', skill2: 'Slash' };
+    // Chơi online (cả Internet lẫn dây LAN): cả 2 máy dùng chung A/S/D/W để di chuyển và E để dùng chiêu
+    const onlineControls = { left: 'KeyA', right: 'KeyD', up: 'KeyW', down: 'KeyS', skill1: 'KeyE', skill2: '' };
 
     if (mode === 'solo') {
         players.push(new Stickman(W / 2, '#00d2d3', 'NGƯỜI CHƠI', p1Controls, p1SelectedSkill, false));
@@ -3063,8 +3267,8 @@ function startGame(mode) {
     } else if (mode === 'online-host' || mode === 'online-guest') {
         const p1Name = onlineRole === 'host' ? onlinePlayerName : onlineOpponentName;
         const p2Name = onlineRole === 'guest' ? onlinePlayerName : onlineOpponentName;
-        players.push(new Stickman(W * 0.35, '#00d2d3', p1Name || 'CHỦ PHÒNG (P1)', p1Controls, p1SelectedSkill, false));
-        players.push(new Stickman(W * 0.65, '#ff9f43', p2Name || 'NGƯỜI VÀO PHÒNG (P2)', p2Controls, p2SelectedSkill, false));
+        players.push(new Stickman(W * 0.35, '#00d2d3', p1Name || 'CHỦ PHÒNG (P1)', onlineControls, p1SelectedSkill, false));
+        players.push(new Stickman(W * 0.65, '#ff9f43', p2Name || 'NGƯỜI VÀO PHÒNG (P2)', onlineControls, p2SelectedSkill, false));
     }
 
     document.getElementById('menu-screen').classList.add('hidden');
@@ -3075,6 +3279,13 @@ function startGame(mode) {
     if (players[0]) document.getElementById('p1-label').textContent = players[0].name;
     onlineGuestInput = { left: false, right: false, up: false, down: false, skill: false };
     onlineLastSnapshotFrame = -1;
+    lanSnaps = [];
+    lanClockOffset = null;
+    lanRocketMap = new Map();
+    lanLastA = null;
+    lanParticleBase = [];
+    lanLastHudTime = 0;
+    lastSentOnlineInput = '';
     updateHUD();
     gameRunning = true;
 }
@@ -3148,6 +3359,11 @@ function drawBackground() {
 function gameLoop() {
     requestAnimationFrame(gameLoop);
 
+    // Máy 2 ở chế độ dây LAN: nội suy giữa các snapshot để hình ảnh liền mạch
+    if (gameRunning && onlineMode && onlineLanMode && onlineRole === 'guest' && gameMode === 'online-guest') {
+        updateLanGuestView();
+    }
+
     ctx.save();
     if (screenShake > 0) {
         const dx = (Math.random() - 0.5) * screenShake;
@@ -3200,8 +3416,9 @@ function gameLoop() {
         powerups = powerups.filter(pw => pw.update());
         particles = particles.filter(pt => pt.update());
 
-        if (onlineMode && onlineRole === 'host' && gameMode === 'online-host' && frameCount % 3 === 0 && gameRunning) {
-            sendOnlineSnapshot();
+        if (onlineMode && onlineRole === 'host' && gameMode === 'online-host' && gameRunning) {
+            if (onlineLanMode) sendLanSnapshot();          // dây LAN: gửi mỗi khung hình (~60 lần/giây)
+            else if (frameCount % 3 === 0) sendOnlineSnapshot(); // Internet: giữ nguyên như cũ
         }
     }
 
