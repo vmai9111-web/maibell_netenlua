@@ -1794,6 +1794,753 @@ function confirmAndStartGame() {
     startGame(gameMode);
 }
 
+// ================= BỘ NÃO AI: MÔ PHỎNG VẬT LÝ + LẬP KẾ HOẠCH =================
+// Nguyên tắc: AI KHÔNG gian lận. Nó chỉ dùng những gì người chơi cũng nhìn thấy (vị trí/vận tốc
+// tên lửa, vạch cảnh báo, vật thể trên sân, vật phẩm, đối thủ) và chỉ được "bấm" đúng 5 phím như
+// người thật: trái, phải, nhảy, trượt, dùng chiêu. Mọi giới hạn của game (tốc độ chạy, nhảy kép,
+// trượt, hồi chiêu, choáng, đảo phím, trói chân...) vẫn áp dụng y hệt. AI không sửa máu, không
+// đọc bộ sinh số ngẫu nhiên, không biết trước tên lửa chưa xuất hiện.
+// Cái khôn nằm ở đây: mỗi khung hình AI mô phỏng trước ~0,7 giây tương lai bằng đúng công thức
+// vật lý của game cho hàng trăm kế hoạch (đi, nhảy, nhảy kép, trượt, rơi xuyên bệ...), chọn kế hoạch
+// an toàn nhất rồi mới bấm phím đầu tiên của kế hoạch đó. Kỹ năng được dùng bằng cách mô phỏng
+// luôn hiệu ứng của nó, và kỹ năng tấn công được tung đúng lúc đối thủ đang bị tên lửa đe dọa.
+const AIBrain = (() => {
+    const HZ = 42;                       // số khung hình nhìn trước (~0,7 giây)
+    const MAXR = 96, MAXF = 32, NONE = -99999;
+    const RK = 8;                        // nửa cạnh hộp va chạm của tên lửa (đúng như Rocket.update)
+    const MG = 5;                        // biên an toàn thêm quanh người
+    const MAXHP = 4;
+    const BUDGET_MS = 9;                 // giới hạn thời gian nghĩ mỗi khung hình
+    const nowMs = () => (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+
+    // ---------------------------------------------------------------- kho kế hoạch di chuyển
+    const PLANS = [];
+    const SKPLANS = [];
+    const SCHED = [[0, 0, 0], [-1, -1, 0], [1, 1, 0]];
+    for (const k of [7, 16]) for (const a of [0, -1, 1]) for (const b of [0, -1, 1]) if (a !== b) SCHED.push([a, b, k]);
+    const VP = [{ j: [], s: [] }];
+    for (const t of [0, 2, 4, 7, 10, 14, 19, 25]) VP.push({ j: [t], s: [] });
+    for (const t1 of [0, 3, 7]) for (const g of [7, 12, 18, 25]) VP.push({ j: [t1, t1 + g], s: [] });
+    for (const t of [0, 1, 3, 6, 10, 15, 22, 30]) VP.push({ j: [], s: [t] });
+    for (const j of [8, 14, 22]) VP.push({ j: [j], s: [0] });
+    VP.push({ j: [10], s: [1] });
+    function mkPlan(sc, v) {
+        const dir = new Int8Array(HZ), jmp = new Uint8Array(HZ), sld = new Uint8Array(HZ);
+        for (let t = 0; t < HZ; t++) dir[t] = t < sc[2] ? sc[0] : sc[1];
+        for (const t of v.j) if (t < HZ) jmp[t] = 1;
+        for (const t of v.s) if (t < HZ) sld[t] = 1;
+        return { dir, jmp, sld };
+    }
+    for (const v of VP) for (const sc of SCHED) PLANS.push(mkPlan(sc, v));
+    for (const v of [VP[0], { j: [0], s: [] }, { j: [3], s: [] }, { j: [8], s: [] }, { j: [0, 12], s: [] }, { j: [], s: [0] }, { j: [], s: [6] }]) {
+        for (let q = 0; q < 3; q++) SKPLANS.push(mkPlan(SCHED[q], v));
+    }
+
+    // ---------------------------------------------------------------- tập tên lửa (mảng số để chạy nhanh)
+    function makeSet() {
+        return {
+            n: 0, turret: false,
+            x: new Float64Array(MAXR), y: new Float64Array(MAXR), vx: new Float64Array(MAXR), vy: new Float64Array(MAXR),
+            warn: new Int32Array(MAXR), fro: new Int32Array(MAXR), hl: new Int32Array(MAXR),
+            hom: new Uint8Array(MAXR), ign: new Uint8Array(MAXR), alive: new Uint8Array(MAXR), used: new Uint8Array(MAXF)
+        };
+    }
+    const R = makeSet();     // ảnh chụp thế giới thật ở khung hình hiện tại
+    const SS = makeSet();    // nhóm tên lửa "tĩnh": quỹ đạo không phụ thuộc AI → tính một lần
+    const DD = makeSet();    // nhóm "động": tên lửa tầm nhiệt (phụ thuộc vị trí AI) hoặc mọi tên lửa khi thử kỹ năng
+    const ALLIDX = new Int32Array(MAXR); for (let i = 0; i < MAXR; i++) ALLIDX[i] = i;
+    const STIDX = new Int32Array(MAXR), HOMIDX = new Int32Array(MAXR);
+    const RAWX = new Float64Array(HZ * MAXR), RAWY = new Float64Array(HZ * MAXR);
+    const CX = new Float64Array(HZ * MAXR), CY = new Float64Array(HZ * MAXR);
+    const CONS = new Uint8Array(MAXR), PUT = new Uint8Array(8);
+    let nHom = 0, NC = 0;
+    let slowEnd = 0, revEnd = 0;
+    let BL = 0, BR = 0, BT = 0, BB = 0;
+    let gCost = 0, gDanger = 0, gHitT = 999;
+    let LT = 0;
+    let A = null;
+    const ME = { x: 0, y: 0, vx: 0, vy: 0, face: 1, jumps: 2, jh: false, sl: false, slT: 0, inv: 0, gh: 0, gnt: 0, shr: 0, spd: 0, ovl: 0, anc: 0, rep: 0, shield: false, hp: 3 };
+    const G = { enemy: null, ex: 0, ey: 0, evx: 0, escale: 1, eh: 54, erep: 0, fields: [], nBase: 0, pu: [], slowBase: 0, revBase: 0, frame: 0, eT: 999 };
+
+    function loadSet(S, idx, cnt) {
+        S.n = cnt;
+        for (let k = 0; k < cnt; k++) {
+            const i = idx[k];
+            S.x[k] = R.x[i]; S.y[k] = R.y[i]; S.vx[k] = R.vx[i]; S.vy[k] = R.vy[i];
+            S.warn[k] = R.warn[i]; S.fro[k] = R.fro[i]; S.hl[k] = R.hl[i];
+            S.hom[k] = R.hom[i]; S.ign[k] = R.ign[i]; S.alive[k] = 1;
+        }
+        S.used.fill(0);
+    }
+
+    // ---------------------------------------------------------------- ảnh chụp thế giới (chỉ thông tin ai cũng nhìn thấy)
+    function snapshot(ai) {
+        const enemy = players.find(p => p !== ai && p.alive) || null;
+        A = {
+            x: ai.x, y: ai.y, vx: ai.vx, vy: ai.vy, face: ai.facing, jumps: ai.jumpsLeft, jh: ai.jumpKeyHold,
+            sl: ai.isSliding, slT: ai.slideTimer, inv: ai.invincible, gh: ai.ghostTimer, gnt: ai.giantTimer,
+            shr: ai.shrinkTimer, spd: ai.speedBoost, ovl: ai.overloadTimer, anc: ai.anchoredTimer, rep: ai.repelTimer,
+            shield: ai.shield, hp: ai.hp, hist: ai.history
+        };
+        G.enemy = enemy;
+        G.slowBase = globalSlowTimer;
+        G.revBase = globalReverseGravityTimer;
+        G.frame = frameCount;
+        G.eT = 999;
+        if (enemy) {
+            G.ex = enemy.x; G.ey = enemy.y; G.evx = enemy.vx; G.escale = enemy.getScale(); G.eh = enemy.getHeight();
+            G.erep = enemy.repelTimer;
+        } else { G.erep = 0; }
+
+        R.n = Math.min(rockets.length, MAXR);
+        for (let i = 0; i < R.n; i++) {
+            const r = rockets[i];
+            R.x[i] = r.x; R.y[i] = r.y; R.vx[i] = r.vx; R.vy[i] = r.vy;
+            R.warn[i] = r.warningTimer | 0; R.fro[i] = r.frozenTimer | 0;
+            R.hl[i] = r.type === 'homing' ? (r.homingLife | 0) : 0;
+            R.hom[i] = r.type === 'homing' ? 1 : 0;
+            R.ign[i] = r.ignorePlayer === ai ? 1 : (r.ignorePlayer && r.ignorePlayer === enemy ? 2 : 0);
+        }
+
+        const F = G.fields;
+        F.length = 0;
+        for (const o of fieldObjects) {
+            if (F.length >= MAXF - 6) break;
+            if (!(o.life > 0)) continue;
+            switch (o.type) {
+                case 'windwall': F.push({ k: 1, x: o.x, y: o.y, x0: o.x - 14, x1: o.x + o.w + 14, y0: o.y, y1: o.y + o.h, t0: 0, life: o.life, p: 0 }); break;
+                case 'blackhole': F.push({ k: 2, x: o.x, y: o.y, t0: 0, life: o.life, p: 0 }); break;
+                case 'gravitywell': F.push({ k: 3, x: o.x, y: o.y, t0: 0, life: o.life, p: 0 }); break;
+                case 'mine': F.push({ k: 4, x: o.x, y: o.y, t0: 0, life: o.life, p: 0 }); break;
+                case 'turret': F.push({ k: 5, x: o.x, y: o.y, t0: 0, life: o.life, p: 35 }); break;
+                case 'thunderstorm': F.push({ k: 8, x: o.x, y: o.y, t0: 0, life: o.life, p: 40 }); break;
+                case 'decoy': F.push({ k: 6, x: o.x, y: o.y, t0: 0, life: o.life, p: 0 }); break;
+            }
+        }
+        G.nBase = F.length;
+
+        G.pu.length = 0;
+        for (const p of powerups) {
+            if (G.pu.length >= 8) break;
+            const mine = Math.hypot(p.x - ai.x, p.y - (ai.y - 25));
+            const theirs = enemy ? Math.hypot(p.x - enemy.x, p.y - (enemy.y - 25)) : 9999;
+            G.pu.push({ x: p.x, y: p.y, type: p.type, life: p.life, skip: theirs < mine - 60 });
+        }
+    }
+
+    // ---------------------------------------------------------------- mô phỏng tên lửa (sao chép Rocket.update)
+    function moveRocket(S, i, t, hx, hy, hasAI) {
+        LT = 0;
+        if (!S.alive[i]) return 0;
+        if (S.warn[i] > 0) { S.warn[i]--; return 0; }
+        if (S.fro[i] > 0) { S.fro[i]--; return 0; }
+        const rx = S.x[i], ry = S.y[i];
+        if (S.hom[i] && S.hl[i] > 0) {
+            S.hl[i]--;
+            let tx = 0, ty = 0, has = false, bd = 220;
+            const F = G.fields;
+            for (let f = 0; f < F.length; f++) {
+                const o = F[f];
+                if (o.k !== 6 || t < o.t0 || t >= o.life) continue;
+                const d = Math.hypot(o.x - rx, (o.y - 25) - ry);
+                if (d < bd) { bd = d; tx = o.x; ty = o.y - 25; has = true; }
+            }
+            if (!has) {
+                const ign = S.ign[i];
+                const dA = (hasAI && ign !== 1) ? Math.hypot(hx - rx, hy - ry) : 1e18;
+                const dE = (G.enemy && ign !== 2) ? Math.hypot(G.ex - rx, G.ey - ry) : 1e18;
+                if (dA < dE) { tx = hx; ty = hy - 25; has = true; LT = 1; }
+                else if (dE < 1e18) { tx = G.ex; ty = G.ey - 25; has = true; LT = 2; }
+            }
+            if (has) {
+                const dx = tx - rx, dy = ty - ry;
+                const d = Math.sqrt(dx * dx + dy * dy) || 1;
+                const sp = Math.sqrt(S.vx[i] * S.vx[i] + S.vy[i] * S.vy[i]);
+                S.vx[i] = S.vx[i] * 0.94 + (dx / d) * sp * 0.06;
+                S.vy[i] = S.vy[i] * 0.94 + (dy / d) * sp * 0.06;
+            }
+        }
+        if (t < revEnd) S.vy[i] -= 0.35;
+        const tm = t < slowEnd ? 0.18 : 1;
+        S.x[i] += S.vx[i] * tm;
+        S.y[i] += S.vy[i] * tm;
+        if (S.y[i] >= GROUND_Y || S.y[i] < -120 || S.x[i] < -80 || S.x[i] > W + 80) { S.alive[i] = 0; return 0; }
+        return 1;
+    }
+
+    function repelPush(S, px, py) {
+        for (let i = 0; i < S.n; i++) {
+            if (!S.alive[i]) continue;
+            const dx = S.x[i] - px, dy = S.y[i] - py;
+            const d = Math.sqrt(dx * dx + dy * dy);
+            if (d < 110 && d > 1) { S.vx[i] += (dx / d) * 1.4; S.vy[i] += (dy / d) * 1.4; }
+        }
+    }
+
+    function killFirst(S) {
+        for (let i = 0; i < S.n; i++) if (S.alive[i]) { S.alive[i] = 0; return; }
+    }
+
+    // vật thể trên sân tác động lên tên lửa (sao chép updateAndDrawFieldObjects)
+    function applyFields(S, t) {
+        const F = G.fields;
+        for (let fi = 0; fi < F.length; fi++) {
+            const f = F[fi];
+            if (t < f.t0 || t >= f.life) continue;
+            switch (f.k) {
+                case 1:
+                    for (let i = 0; i < S.n; i++) {
+                        if (S.alive[i] && S.x[i] > f.x0 && S.x[i] < f.x1 && S.y[i] > f.y0 && S.y[i] < f.y1) S.alive[i] = 0;
+                    }
+                    break;
+                case 2: {
+                    const killAll = (f.life - 1 - t) === 1;
+                    for (let i = 0; i < S.n; i++) {
+                        if (!S.alive[i]) continue;
+                        const dx = f.x - S.x[i], dy = f.y - S.y[i];
+                        const d = Math.sqrt(dx * dx + dy * dy);
+                        if (d < 280 && d > 1) { S.vx[i] += (dx / d) * 1.2; S.vy[i] += (dy / d) * 1.2; }
+                        if (d < 28 || killAll) S.alive[i] = 0;
+                    }
+                    break;
+                }
+                case 3:
+                    for (let i = 0; i < S.n; i++) {
+                        if (!S.alive[i]) continue;
+                        const dx = f.x - S.x[i], dy = f.y - S.y[i];
+                        const d = Math.sqrt(dx * dx + dy * dy);
+                        if (d < 185 && d > 1) { S.vx[i] += (dx / d) * 0.8; S.vy[i] += (dy / d) * 0.8; }
+                        if (d < 22) S.alive[i] = 0;
+                    }
+                    break;
+                case 4: {
+                    if (fi < MAXF && S.used[fi]) break;
+                    let trig = false;
+                    for (let i = 0; i < S.n; i++) {
+                        if (S.alive[i] && Math.hypot(S.x[i] - f.x, S.y[i] - (f.y - 8)) < 48) { S.alive[i] = 0; trig = true; }
+                    }
+                    if (trig) {
+                        for (let i = 0; i < S.n; i++) {
+                            if (S.alive[i] && Math.hypot(S.x[i] - f.x, S.y[i] - f.y) < 68) S.alive[i] = 0;
+                        }
+                        if (fi < MAXF) S.used[fi] = 1;
+                    }
+                    break;
+                }
+                case 5:
+                    if (S.turret && ((f.life - 1 - t) % f.p === 0)) killFirst(S);
+                    break;
+                case 8:
+                    if (S.turret && ((G.frame + t) % f.p === 0)) killFirst(S);
+                    break;
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------- quỹ đạo của nhóm tên lửa tĩnh (tính 1 lần / khung hình)
+    function buildStatic() {
+        NC = 0; nHom = 0;
+        let m = 0;
+        for (let i = 0; i < R.n; i++) {
+            if (R.hom[i] && R.hl[i] > 0) HOMIDX[nHom++] = i;
+            else STIDX[m++] = i;
+        }
+        if (A.rep > 0) return;               // đang bật từ trường của chính mình → mọi tên lửa phụ thuộc AI, mô phỏng đầy đủ
+        loadSet(SS, STIDX, m);
+        SS.turret = true;
+        slowEnd = G.slowBase; revEnd = G.revBase;
+        const erepOn = G.erep > 1;
+        for (let t = 0; t < HZ; t++) {
+            if (erepOn && t >= 1 && t < G.erep) repelPush(SS, G.ex, G.ey - 25);
+            for (let k = 0; k < m; k++) {
+                const mv = moveRocket(SS, k, t, 0, 0, false);
+                RAWX[t * m + k] = mv ? SS.x[k] : NONE;
+                RAWY[t * m + k] = mv ? SS.y[k] : NONE;
+            }
+            applyFields(SS, t);
+        }
+        // lọc: chỉ giữ tên lửa có thể chạm tới vùng AI với tới được; đồng thời đo mức đe dọa đối với đối thủ
+        const reach = HZ * 8.5 + 40;
+        const ex = G.ex + G.evx * 3, ehw = 11 * G.escale + 12 + RK;
+        const etop = G.ey - G.eh - 12 - RK, ebot = G.ey + 12 + RK;
+        for (let k = 0; k < m; k++) {
+            let near = false;
+            const ign = R.ign[STIDX[k]];
+            for (let t = 0; t < HZ; t++) {
+                const rx = RAWX[t * m + k];
+                if (rx === NONE) continue;
+                if (!near && Math.abs(rx - A.x) < reach + 20) near = true;
+                if (G.enemy && ign !== 2 && t < G.eT) {
+                    const ry = RAWY[t * m + k];
+                    if (Math.abs(rx - ex) < ehw && ry > etop && ry < ebot) G.eT = t;
+                }
+            }
+            if (!near || R.ign[STIDX[k]] === 1) continue;
+            for (let t = 0; t < HZ; t++) { CX[t * MAXR + NC] = RAWX[t * m + k]; CY[t * MAXR + NC] = RAWY[t * m + k]; }
+            NC++;
+        }
+    }
+
+    // ---------------------------------------------------------------- hiệu ứng kỹ năng trong mô phỏng (sao chép activateSkill)
+    function clampX(x, lo) { return x < lo ? lo : (x > W - lo ? W - lo : x); }
+    function killNear(S, cx, cy, r) {
+        let c = 0;
+        for (let i = 0; i < S.n; i++) {
+            if (S.alive[i] && Math.hypot(S.x[i] - cx, S.y[i] - cy) < r) { S.alive[i] = 0; c++; }
+        }
+        return c;
+    }
+    function pushNear(S, cx, cy, r, k, noHoming) {
+        for (let i = 0; i < S.n; i++) {
+            if (!S.alive[i]) continue;
+            const dx = S.x[i] - cx, dy = S.y[i] - cy, d = Math.sqrt(dx * dx + dy * dy);
+            if (d < r && d > 0) { S.vx[i] += (dx / d) * k; S.vy[i] += (dy / d) * k; if (noHoming) S.hl[i] = 0; }
+        }
+    }
+    function addField(f) { if (G.fields.length < MAXF) G.fields.push(f); }
+
+    function applySkill(id, m, S, t) {
+        const cx = m.x, cy = m.y - 25;
+        const en = G.enemy;
+        switch (id) {
+            case 'blink': m.x = clampX(m.x + m.face * 165, 26); m.inv = 25; break;
+            case 'timelock': slowEnd = t + 240; break;
+            case 'blackhole': addField({ k: 2, x: W / 2, y: GROUND_Y - 140, t0: t, life: t + 210, p: 0 }); break;
+            case 'reflect':
+                for (let i = 0; i < S.n; i++) {
+                    if (S.alive[i] && Math.hypot(S.x[i] - cx, S.y[i] - cy) < 220) {
+                        S.vx[i] = -S.vx[i] * 1.3; S.vy[i] = -Math.abs(S.vy[i]) - 3; S.hl[i] = 0;
+                    }
+                }
+                break;
+            case 'emp': for (let i = 0; i < S.n; i++) S.alive[i] = 0; break;
+            case 'freeze': for (let i = 0; i < S.n; i++) S.fro[i] = 210; break;
+            case 'swap': if (en) { m.x = en.x; m.y = en.y; } m.inv = 30; break;
+            case 'invincible': m.inv = 210; break;
+            case 'decoy': addField({ k: 6, x: m.x + m.face * 60, y: m.y, t0: t, life: t + 300, p: 0 }); break;
+            case 'dash': m.x = clampX(m.x + m.face * 210, 26); m.inv = 35; break;
+            case 'highjump': m.vy = -17.5; m.jumps = 2; killNear(S, m.x, m.y, 160); break;
+            case 'heal': case 'healingwave': if (m.hp < MAXHP) m.hp++; else m.shield = true; break;
+            case 'shrink': m.shr = 360; break;
+            case 'giant': m.gnt = 270; m.inv = 270; break;
+            case 'ghost': m.gh = 200; break;
+            case 'windwall': {
+                const wx = m.x + m.face * 55, wy = m.y - 80;
+                addField({ k: 1, x: wx, y: wy, x0: wx - 14, x1: wx + 16 + 14, y0: wy, y1: wy + 85, t0: t, life: t + 240, p: 0 });
+                break;
+            }
+            case 'repel': m.rep = 300; break;
+            case 'laser': {
+                const yl = m.y - 28;
+                for (let i = 0; i < S.n; i++) {
+                    if (!S.alive[i]) continue;
+                    const inDir = m.face > 0 ? S.x[i] >= m.x : S.x[i] <= m.x;
+                    if (inDir && Math.abs(S.y[i] - yl) < 42) S.alive[i] = 0;
+                }
+                break;
+            }
+            case 'turret': addField({ k: 5, x: m.x, y: m.y, t0: t, life: t + 360, p: 35 }); break;
+            case 'gravity': revEnd = t + 150; break;
+            case 'stun': killNear(S, m.x, m.y, 180); break;
+            case 'smoke': m.spd = 270; for (let i = 0; i < S.n; i++) S.hl[i] = 0; break;
+            case 'portal': m.x = W / 2; m.y = GROUND_Y - 210; m.vy = 0; m.inv = 35; break;
+            case 'overload': m.ovl = 300; m.jumps = 4; break;
+            case 'frostnova':
+                for (let i = 0; i < S.n; i++) if (S.alive[i] && Math.hypot(S.x[i] - m.x, S.y[i] - m.y) < 220) S.fro[i] = 240;
+                break;
+            case 'Phoenix':
+                m.shield = true;
+                for (let i = 0; i < S.n; i++) {
+                    if (S.alive[i] && Math.hypot(S.x[i] - m.x, S.y[i] - m.y) < 160) { S.vx[i] = -S.vx[i]; S.vy[i] = -6; }
+                }
+                break;
+            case 'crystal': m.shield = true; killNear(S, cx, cy, 115); break;
+            case 'wormhole': m.x = clampX(m.x + m.face * 190, 45); m.inv = 22; break;
+            case 'rewind': {
+                const h = A.hist;
+                if (h && h.length > 0) {
+                    const past = h[Math.max(0, h.length - 90)];
+                    m.x = Math.max(30, Math.min(W - 30, past.x));
+                    m.y = Math.max(100, Math.min(GROUND_Y, past.y));
+                    m.vx = 0; m.vy = 0;
+                    m.hp = Math.min(MAXHP, Math.max(m.hp, Math.min(m.hp + 1, past.hp)));
+                    m.jumps = 2;
+                }
+                m.inv = 24;
+                break;
+            }
+            case 'mines':
+                for (const off of [-105, 0, 105]) addField({ k: 4, x: Math.max(35, Math.min(W - 35, m.x + off)), y: GROUND_Y - 7, t0: t, life: t + 300, p: 0 });
+                break;
+            case 'sonicboom':
+                for (let i = 0; i < S.n; i++) {
+                    if (!S.alive[i]) continue;
+                    const inFront = m.face > 0 ? S.x[i] >= m.x - 10 : S.x[i] <= m.x + 10;
+                    const dx = Math.abs(S.x[i] - m.x), dy = Math.abs(S.y[i] - cy);
+                    if (inFront && dx < 260 && dy < 62) S.alive[i] = 0;
+                    else if (Math.hypot(dx, dy) < 135) { S.vx[i] += (S.x[i] >= m.x ? 1 : -1) * 3.5; S.vy[i] -= 1.2; S.hl[i] = 0; }
+                }
+                break;
+            case 'twindecoy':
+                addField({ k: 6, x: Math.max(30, m.x - 80), y: m.y, t0: t, life: t + 240, p: 0 });
+                addField({ k: 6, x: Math.min(W - 30, m.x + 80), y: m.y, t0: t, life: t + 240, p: 0 });
+                break;
+            case 'icearmor':
+                m.shield = true;
+                for (let i = 0; i < S.n; i++) if (S.alive[i] && Math.hypot(S.x[i] - cx, S.y[i] - cy) < 150) S.fro[i] = Math.max(S.fro[i], 85);
+                break;
+            case 'gravitywell': addField({ k: 3, x: m.x, y: m.y - 48, t0: t, life: t + 150, p: 0 }); break;
+            case 'absorb': {
+                const c = killNear(S, cx, cy, 145);
+                if (c > 0) { if (m.hp < MAXHP) m.hp++; else m.shield = true; }
+                break;
+            }
+            case 'airmaster': m.vy = -13.5; m.jumps = 3; m.ovl = 110; m.spd = 110; break;
+            case 'flameaura': killNear(S, cx, cy, 95); m.inv = 25; break;
+            case 'mirror':
+                m.shield = true;
+                for (let i = 0; i < S.n; i++) {
+                    if (!S.alive[i]) continue;
+                    const dx = S.x[i] - cx, dy = S.y[i] - cy, d = Math.sqrt(dx * dx + dy * dy);
+                    if (d < 165 && d > 0) { S.vx[i] = (dx / d) * 6; S.vy[i] = (dy / d) * 6; S.hl[i] = 0; }
+                }
+                break;
+            case 'jammer':
+                slowEnd = Math.max(slowEnd, t + 90);
+                for (let i = 0; i < S.n; i++) if (S.alive[i] && Math.hypot(S.x[i] - cx, S.y[i] - cy) < 240) S.hl[i] = 0;
+                break;
+            case 'tacticalblink':
+                if (en) m.x = clampX(en.x + (en.x <= m.x ? 85 : -85), 28);
+                else m.x = m.x < W / 2 ? W - 75 : 75;
+                m.inv = 22;
+                break;
+            case 'energygrid':
+                for (const x of [Math.max(28, m.x - 115), Math.min(W - 28, m.x + 115)]) {
+                    addField({ k: 1, x: x - 6, y: GROUND_Y - 105, x0: x - 20, x1: x + 20, y0: GROUND_Y - 105, y1: GROUND_Y, t0: t, life: t + 120, p: 0 });
+                }
+                break;
+            case 'missiledecoy':
+                addField({ k: 6, x: Math.max(30, m.x - 125), y: GROUND_Y, t0: t, life: t + 160, p: 0 });
+                addField({ k: 6, x: Math.min(W - 30, m.x + 125), y: GROUND_Y, t0: t, life: t + 160, p: 0 });
+                break;
+            case 'tornado':
+                m.rep = Math.max(m.rep, 150); m.vy = -9; m.jumps = 2; m.spd = 120;
+                pushNear(S, cx, cy, 115, 3, true);
+                break;
+            case 'icestorm': for (let i = 0; i < S.n; i++) S.fro[i] = Math.max(S.fro[i], 90); break;
+            case 'quake':
+                for (let i = 0; i < S.n; i++) if (S.alive[i] && S.y[i] > GROUND_Y - 105) S.alive[i] = 0;
+                break;
+            case 'storm': addField({ k: 8, x: W / 2, y: 55, t0: t, life: t + 165, p: 40 }); break;
+            case 'drones':
+                for (const off of [-85, 85]) addField({ k: 5, x: Math.max(25, Math.min(W - 25, m.x + off)), y: GROUND_Y, t0: t, life: t + 145, p: 35 });
+                break;
+            case 'speedghost': m.gh = Math.max(m.gh, 100); m.spd = Math.max(m.spd, 160); m.ovl = Math.max(m.ovl, 100); break;
+            case 'emergency':
+                m.shield = true; m.vy = -11.5; m.jumps = 2;
+                pushNear(S, cx, cy, 105, 3, false);
+                break;
+            case 'branchtime': slowEnd = Math.max(slowEnd, t + 100); break;
+            case 'twinportal': m.x = m.x < W / 2 ? W - 90 : 90; m.y = GROUND_Y; m.vx = 0; m.vy = 0; m.inv = 24; break;
+            case 'annihilation': killNear(S, cx, cy, 160); break;
+            case 'guardian':
+                if (m.hp < MAXHP) m.hp++; else m.shield = true;
+                pushNear(S, cx, cy, 135, 4, true);
+                break;
+            default: break;      // kỹ năng thuần tấn công/ngẫu nhiên: không ảnh hưởng đường né của chính AI
+        }
+    }
+
+    // ---------------------------------------------------------------- va chạm & trúng đòn
+    function registerHit(t) {
+        const tw = 1.5 - 0.5 * (t / HZ);
+        if (ME.shield) {
+            ME.shield = false; ME.inv = 60;
+            gCost += 150 * tw; gDanger += 150 * tw;
+        } else {
+            const c = ME.hp <= 1 ? 40000 : 1000 + (MAXHP - ME.hp) * 250;
+            ME.hp--; ME.inv = 85;
+            gCost += c * tw; gDanger += c * tw;
+        }
+        if (t < gHitT) gHitT = t;
+    }
+
+    // ---------------------------------------------------------------- đánh giá một kế hoạch bằng cách mô phỏng
+    // skillId !== null: thử dùng kỹ năng đó ở bước ks của kế hoạch (mô phỏng đầy đủ mọi tên lửa)
+    function evaluate(plan, skillId, ks, limit, track) {
+        const m = ME, a = A;
+        m.x = a.x; m.y = a.y; m.vx = a.vx; m.vy = a.vy; m.face = a.face; m.jumps = a.jumps; m.jh = a.jh;
+        m.sl = a.sl; m.slT = a.slT; m.inv = a.inv; m.gh = a.gh; m.gnt = a.gnt; m.shr = a.shr; m.spd = a.spd;
+        m.ovl = a.ovl; m.anc = a.anc; m.rep = a.rep; m.shield = a.shield; m.hp = a.hp;
+        const full = skillId !== null || a.rep > 0;
+        slowEnd = G.slowBase; revEnd = G.revBase;
+        G.fields.length = G.nBase;
+        let nS = 0;
+        if (full) { loadSet(DD, ALLIDX, R.n); DD.turret = true; }
+        else { loadSet(DD, HOMIDX, nHom); DD.turret = false; nS = NC; for (let k = 0; k < nS; k++) CONS[k] = 0; }
+        PUT.fill(0);
+        gCost = 0; gDanger = 0; gHitT = 999;
+        let bonus = 0, lure = 0;
+        const erepOn = G.erep > 1;
+        const pus = G.pu;
+        const ex = G.ex + G.evx * 3, ehw = 11 * G.escale + 12 + RK;
+        const etop = G.ey - G.eh - 12 - RK, ebot = G.ey + 12 + RK;
+
+        for (let t = 0; t < HZ; t++) {
+            if (t > 0) {
+                if (m.inv > 0) m.inv--;
+                if (m.spd > 0) m.spd--;
+                if (m.shr > 0) m.shr--;
+                if (m.gnt > 0) m.gnt--;
+                if (m.gh > 0) m.gh--;
+                if (m.rep > 0) m.rep--;
+                if (m.ovl > 0) m.ovl--;
+                if (m.anc > 0) m.anc--;
+                if (m.slT > 0) { m.slT--; if (m.slT === 0) m.sl = false; }
+                if (full && m.rep > 0) repelPush(DD, m.x, m.y - 25);
+                if (erepOn && t < G.erep) repelPush(DD, G.ex, G.ey - 25);
+            }
+            if (skillId !== null && t === ks) applySkill(skillId, m, DD, t);
+
+            // --- bản thân di chuyển (sao chép Stickman.update) ---
+            let ms = m.spd > 0 ? 7.2 : 5.2;
+            if (m.ovl > 0) ms = 8.5;
+            if (m.anc > 0) ms = 2.0;
+            const d = plan.dir[t], jp = plan.jmp[t], sd = plan.sld[t];
+            if (sd && !m.sl && m.vy === 0) {
+                m.sl = true; m.slT = 24; m.vx = m.face * (ms + 3.2); gCost += 1.0;
+            }
+            if (!m.sl) {
+                if (d < 0) { m.vx = -ms; m.face = -1; gCost += 0.02; }
+                else if (d > 0) { m.vx = ms; m.face = 1; gCost += 0.02; }
+                else m.vx *= 0.78;
+            } else m.vx *= 0.94;
+            if (jp && !m.jh && m.jumps > 0 && m.anc <= 0) {
+                m.vy = -12.6; m.jumps--; m.sl = false; m.jh = true; gCost += 1.2;
+            }
+            if (!jp) m.jh = false;
+            const prevY = m.y;
+            m.vy += 0.58; m.x += m.vx; m.y += m.vy;
+            if (m.x < 24) m.x = 24;
+            if (m.x > W - 24) m.x = W - 24;
+            const maxJ = m.ovl > 0 ? 4 : 2;
+            if (m.vy > 0 && !sd) {
+                for (let q = 0; q < platforms.length; q++) {
+                    const pf = platforms[q];
+                    if (m.x >= pf.x && m.x <= pf.x + pf.w && prevY <= pf.y && m.y >= pf.y) { m.y = pf.y; m.vy = 0; m.jumps = maxJ; }
+                }
+            }
+            if (m.y >= GROUND_Y) { m.y = GROUND_Y; m.vy = 0; m.jumps = maxJ; }
+
+            const sc = m.shr > 0 ? 0.45 : (m.gnt > 0 ? 1.65 : 1);
+            BL = m.x - 11 * sc; BR = m.x + 11 * sc; BT = m.y - (m.sl ? 24 : 54) * sc; BB = m.y;
+            const prot = m.inv > 0 || m.gnt > 0;
+            const ghost = m.gh > 0;
+
+            // --- tên lửa tĩnh (đã tính sẵn quỹ đạo) ---
+            if (nS > 0) {
+                const base = t * MAXR;
+                for (let k = 0; k < nS; k++) {
+                    if (CONS[k]) continue;
+                    const rx = CX[base + k];
+                    if (rx === NONE) continue;
+                    if (rx + RK + MG <= BL || rx - RK - MG >= BR) continue;
+                    const ry = CY[base + k];
+                    if (ry + RK + MG <= BT || ry - RK - MG >= BB) continue;
+                    if (ghost) continue;
+                    if (rx + RK > BL && rx - RK < BR && ry + RK > BT && ry - RK < BB) {
+                        CONS[k] = 1;
+                        if (!prot) registerHit(t);
+                    } else if (!prot) { gCost += 4; gDanger += 4; }
+                }
+            }
+
+            // --- tên lửa động ---
+            for (let i = 0; i < DD.n; i++) {
+                if (!DD.alive[i]) continue;
+                const mv = moveRocket(DD, i, t, m.x, m.y, true);
+                if (!mv) continue;
+                if (LT === 2) lure++;
+                const rx = DD.x[i], ry = DD.y[i];
+                if (track && G.enemy && DD.ign[i] !== 2 && t < G.eT) {
+                    if (Math.abs(rx - ex) < ehw && ry > etop && ry < ebot) G.eT = t;
+                }
+                if (DD.ign[i] === 1) continue;
+                if (rx + RK + MG <= BL || rx - RK - MG >= BR) continue;
+                if (ry + RK + MG <= BT || ry - RK - MG >= BB) continue;
+                if (ghost) continue;
+                if (rx + RK > BL && rx - RK < BR && ry + RK > BT && ry - RK < BB) {
+                    DD.alive[i] = 0;
+                    if (!prot) registerHit(t);
+                } else if (!prot) { gCost += 4; gDanger += 4; }
+            }
+            applyFields(DD, t);
+
+            // --- nhặt vật phẩm ---
+            for (let p = 0; p < pus.length; p++) {
+                if (PUT[p] || t >= pus[p].life) continue;
+                const u = pus[p];
+                if (Math.hypot(m.x - u.x, (m.y - 25) - u.y) < 28) {
+                    PUT[p] = 1;
+                    if (u.type === 'shield') { bonus += m.shield ? 8 : 80; m.shield = true; }
+                    else { bonus += 18; m.spd = 300; }
+                }
+            }
+            if (gCost - bonus > limit || m.hp <= 0) { G.fields.length = G.nBase; return gCost - bonus > limit ? 1e9 : gCost - bonus; }
+        }
+
+        // --- đánh giá trạng thái cuối kế hoạch ---
+        let c = gCost - bonus - lure * 0.25;
+        const edge = Math.min(m.x, W - m.x);
+        if (edge < 90) c += (90 - edge) * 0.08;
+        c += Math.abs(m.x - W / 2) * 0.012;
+        if (m.vy !== 0) c += 2 + ((m.ovl > 0 ? 4 : 2) - m.jumps) * 2.5;
+        for (let p = 0; p < pus.length; p++) {
+            const u = pus[p];
+            if (PUT[p] || u.skip || u.life < 25) continue;
+            const w = u.type === 'shield' ? (m.shield ? 0.01 : 0.11) : 0.025;
+            c += w * Math.hypot(m.x - u.x, (m.y - 25) - u.y);
+        }
+        G.fields.length = G.nBase;
+        return c;
+    }
+
+    // ---------------------------------------------------------------- chọn kỹ năng
+    const LEAD = { blackhole: 55, gravity: 60, turret: 50, drones: 50, storm: 55, gravitywell: 36, mines: 34, repel: 36, tornado: 26, decoy: 40, twindecoy: 40, missiledecoy: 40 };
+    const NO_DEFENSE = new Set(['meteor', 'volley', 'confusion', 'anchor', 'chainlightning', 'gamble']);
+
+    function enemyVulnerableAtThreat(en) {
+        if (!en || G.eT >= 999) return false;
+        return G.eT >= Math.max(en.invincible, en.ghostTimer, en.giantTimer);
+    }
+
+    function chooseSkill(ai, bestP, bestC, bestD, bestH, top) {
+        const id = ai.skill.id;
+        const en = G.enemy;
+        const safe = bestD < 1;
+
+        // 1) kỹ năng hồi máu / lấy khiên: dùng ngay khi sẵn sàng và còn có ích
+        switch (id) {
+            case 'heal': case 'healingwave': case 'guardian':
+                if (ai.hp < ai.maxHp || !ai.shield) return { now: true };
+                break;
+            case 'crystal': case 'icearmor': case 'mirror': case 'Phoenix':
+                if (!ai.shield && safe) return { now: true };
+                break;
+            case 'absorb': {
+                let near = 0;
+                for (let i = 0; i < R.n; i++) if (R.ign[i] !== 1 && Math.hypot(R.x[i] - ai.x, R.y[i] - (ai.y - 25)) < 145) near++;
+                if (near > 0 && (ai.hp < ai.maxHp || !ai.shield)) return { now: true };
+                break;
+            }
+            case 'rewind': {
+                const h = ai.history;
+                if (h && h.length > 0 && h[Math.max(0, h.length - 90)].hp > ai.hp && safe) return { now: true };
+                break;
+            }
+        }
+
+        // 2) kỹ năng tấn công: tung đúng lúc đối thủ bị tên lửa đe dọa / để bồi thêm tên lửa truy kích
+        if (en) {
+            const vuln = enemyVulnerableAtThreat(en);
+            switch (id) {
+                case 'meteor': case 'volley': case 'branchtime':
+                    if (safe && en.invincible < 30 && en.ghostTimer < 30 && en.giantTimer < 30) return { now: true };
+                    break;
+                case 'stun':
+                    if (vuln && G.eT >= 2 && en.stunTimer <= 0) return { now: true };
+                    break;
+                case 'confusion':
+                    if (vuln && G.eT >= 2 && en.confusedTimer <= 0 && en.stunTimer <= 0) return { now: true };
+                    break;
+                case 'anchor':
+                    if (vuln && G.eT >= 2 && en.anchoredTimer <= 0 && en.stunTimer <= 0) return { now: true };
+                    break;
+            }
+        }
+
+        // 3) phòng thủ: chỉ dùng khi kế hoạch tốt nhất vẫn dự đoán trúng đòn và kỹ năng thật sự cứu được
+        const lead = LEAD[id] || 20;
+        if (id === 'gamble') {
+            if (bestH <= 12 && bestC >= 300) return { now: true };
+            return null;
+        }
+        if (NO_DEFENSE.has(id)) return null;
+        if (bestC < 140 || bestH > lead) return null;
+
+        const useCost = 40 + 4 * ai.skill.cd;
+        let bestSC = Infinity, bestSP = null, bestKs = 0;
+        const cands = SKPLANS.concat(top.map(x => x.plan));
+        for (let ks = 0; ks <= 1; ks++) {
+            for (let q = 0; q < cands.length; q++) {
+                const c = evaluate(cands[q], id, ks, Math.min(bestSC, bestC) + 30, false);
+                if (c < bestSC) { bestSC = c; bestSP = cands[q]; bestKs = ks; }
+            }
+        }
+        if (bestSP && bestSC + useCost < bestC - 60) {
+            return { now: bestKs === 0, plan: bestSP };
+        }
+        return null;
+    }
+
+    // ---------------------------------------------------------------- quyết định mỗi khung hình
+    function shifted(p) {
+        const dir = new Int8Array(HZ), jmp = new Uint8Array(HZ), sld = new Uint8Array(HZ);
+        for (let t = 0; t < HZ - 1; t++) { dir[t] = p.dir[t + 1]; jmp[t] = p.jmp[t + 1]; sld[t] = p.sld[t + 1]; }
+        dir[HZ - 1] = p.dir[HZ - 1];
+        return { dir, jmp, sld };
+    }
+
+    const stats = { calls: 0, ms: 0, maxMs: 0 };
+
+    function decide(ai) {
+        const t0 = nowMs();
+        snapshot(ai);
+        buildStatic();
+
+        let bestC = Infinity, bestP = PLANS[0], bestD = 0, bestH = 999;
+        const top = [];
+        const consider = (plan, bias, track) => {
+            const c = evaluate(plan, null, 0, bestC + 90, !!track) - bias;
+            if (c >= 1e8) return;
+            if (c < bestC) { bestC = c; bestP = plan; bestD = gDanger; bestH = gHitT; }
+            if (top.length < 6 || c < top[top.length - 1].c) {
+                top.push({ c, plan });
+                top.sort((x, y) => x.c - y.c);
+                if (top.length > 6) top.pop();
+            }
+        };
+
+        // vòng nhanh: đứng yên / chạy trái / chạy phải (cũng đo mức đe dọa lên đối thủ)
+        for (let q = 0; q < 3; q++) consider(PLANS[q], 0, q === 0);
+        const needFull = bestD > 0 || A.rep > 0;
+        if (needFull) {
+            if (ai._brain) consider(ai._brain, 2);
+            for (let q = 3; q < PLANS.length; q++) {
+                consider(PLANS[q], 0);
+                if ((q & 15) === 0 && nowMs() - t0 > BUDGET_MS) break;
+            }
+        }
+
+        let skillNow = false;
+        if (ai.skillCd <= 0 && ai.stunTimer <= 0) {
+            const sk = chooseSkill(ai, bestP, bestC, bestD, bestH, top);
+            if (sk) { skillNow = !!sk.now; if (sk.plan) bestP = sk.plan; }
+        }
+
+        ai._brain = shifted(bestP);
+        let left = bestP.dir[0] < 0, right = bestP.dir[0] > 0;
+        // Bùa Hỗn Loạn: game sẽ đảo phím trái/phải của AI, nên AI bấm ngược lại để đi đúng ý định
+        if (ai.confusedTimer > 0) { const tmp = left; left = right; right = tmp; }
+
+        const dt = nowMs() - t0;
+        stats.calls++; stats.ms += dt; if (dt > stats.maxMs) stats.maxMs = dt;
+        return { left, right, jump: !!bestP.jmp[0], slide: !!bestP.sld[0], skill: skillNow };
+    }
+
+    return { decide, stats };
+})();
+
 // ================= LỚP NHÂN VẬT NGƯỜI QUE =================
 class Stickman {
     constructor(x, color, name, controls, skillIdx, isAI = false) {
@@ -2542,54 +3289,9 @@ class Stickman {
     }
 
     computeAI() {
-        let left = false, right = false, jump = false, slide = false, skill = false;
-        let dangerRocket = null;
-        let minDist = 9999;
-
-        for (const r of rockets) {
-            const dx = r.x - this.x;
-            const dy = r.y - (this.y - 25);
-            const dist = Math.hypot(dx, dy);
-            if (dist < minDist) {
-                minDist = dist;
-                dangerRocket = r;
-            }
-        }
-
-        if (dangerRocket && minDist < 115 && this.skillCd <= 0) {
-            skill = true;
-        }
-
-        if (dangerRocket && minDist < 240) {
-            if (Math.abs(dangerRocket.vy) < 1.5) {
-                const rocketHeightFromFeet = this.y - dangerRocket.y;
-                if (rocketHeightFromFeet > 28 && rocketHeightFromFeet < 62) {
-                    slide = true;
-                } else if (rocketHeightFromFeet <= 28 && rocketHeightFromFeet >= -10) {
-                    jump = true;
-                }
-            } else {
-                if (dangerRocket.x > this.x) {
-                    left = true;
-                    if (this.x < 90) right = true;
-                } else {
-                    right = true;
-                    if (this.x > W - 90) left = true;
-                }
-                if (minDist < 95 && Math.random() < 0.3) jump = true;
-            }
-        } else {
-            if (powerups.length > 0) {
-                const p = powerups[0];
-                if (p.x < this.x - 15) left = true;
-                else if (p.x > this.x + 15) right = true;
-                if (p.y < this.y - 50 && Math.abs(p.x - this.x) < 60) jump = true;
-            } else {
-                if (this.x < W * 0.35) right = true;
-                else if (this.x > W * 0.65) left = true;
-            }
-        }
-        return { left, right, jump, slide, skill };
+        // Bộ não AI mới (mô phỏng vật lý + lập kế hoạch) nằm ở AIBrain phía trên lớp này.
+        // Hàm trả về đúng 5 "phím" như người chơi: left, right, jump, slide, skill.
+        return AIBrain.decide(this);
     }
 
     takeDamage() {
